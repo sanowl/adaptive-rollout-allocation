@@ -142,6 +142,7 @@ class RolloutPredictor(nn.Module):
             w = torch.as_tensor(np.asarray(sample_weight), dtype=torch.float32, device=self.device)
         # Weight observations by rollout count (more rollouts => more reliable).
         w = w * cnt
+        denom = w.sum().clamp_min(1e-8)        # robust to all-zero bagging weights
         if etg_target is None:
             etg_t = p_hat * (1.0 - p_hat)
         else:
@@ -154,14 +155,72 @@ class RolloutPredictor(nn.Module):
             logit, etg = self._forward_logits(x)
             # Binomial NLL on success counts, weighted by reliability.
             bce = F.binary_cross_entropy_with_logits(logit, p_hat, reduction="none")
-            loss_p = (w * bce).sum() / w.sum()
-            loss_etg = (w * (etg - etg_t) ** 2).sum() / w.sum()
+            loss_p = (w * bce).sum() / denom
+            loss_etg = (w * (etg - etg_t) ** 2).sum() / denom
             loss = loss_p + 0.5 * loss_etg
             loss.backward()
             self.opt.step()
             loss_val = float(loss.detach())
         self.eval()
         return loss_val
+
+
+class EnsemblePredictor:
+    """Deep ensemble of :class:`RolloutPredictor` members for *calibrated*
+    epistemic uncertainty (Review fix #3 — replaces MC-dropout).
+
+    Uncertainty is the disagreement (std) of ``p_success`` across independently
+    initialised members. Deep ensembles are the standard strong baseline for
+    calibrated uncertainty and degrade gracefully as a prompt accrues evidence:
+    members converge -> disagreement shrinks. Members are decorrelated by (i)
+    different random initialisation and (ii) *online bagging* — each member
+    weights every observation by an independent ``Poisson(1)`` draw, the
+    streaming analogue of a bootstrap resample.
+
+    Drop-in compatible with :class:`RolloutPredictor`: same ``predict`` / ``update``
+    signatures, so it can be passed straight to :class:`~aroll.vip.VIPAllocator`.
+    """
+
+    def __init__(self, embed_dim: int, n_members: int = 5, hidden: int = 128,
+                 dropout: float = 0.0, lr: float = 1e-3, device: str | None = None,
+                 seed: int = 0):
+        self.embed_dim = embed_dim
+        self.n_members = n_members
+        self._rng = np.random.default_rng(seed)
+        self.members: list[RolloutPredictor] = []
+        for k in range(n_members):
+            torch.manual_seed(seed + 1000 * (k + 1))   # diverse initialisation
+            self.members.append(RolloutPredictor(embed_dim, hidden, dropout, lr, device))
+
+    @torch.no_grad()
+    def predict(self, embeddings: np.ndarray, mc_samples: int = 1) -> Prediction:
+        # Each member does one deterministic forward (dropout off); the ensemble
+        # spread is the uncertainty. ``mc_samples`` is accepted for interface
+        # parity but ignored (ensemble disagreement supplies the uncertainty).
+        ps, etgs = [], []
+        for m in self.members:
+            pr = m.predict(embeddings, mc_samples=1)
+            ps.append(pr.p_success)
+            etgs.append(pr.expected_training_gain)
+        P = np.stack(ps, 0)                              # (M, B)
+        return Prediction(
+            p_success=P.mean(0),
+            uncertainty=P.std(0),                        # epistemic disagreement
+            expected_training_gain=np.stack(etgs, 0).mean(0),
+        )
+
+    def update(self, embeddings: np.ndarray, successes: np.ndarray, counts: np.ndarray,
+               sample_weight: np.ndarray | None = None, etg_target: np.ndarray | None = None,
+               steps: int = 5) -> float:
+        B = np.asarray(successes).shape[0]
+        base = np.ones(B) if sample_weight is None else np.asarray(sample_weight, dtype=float)
+        losses = []
+        for m in self.members:
+            poisson = self._rng.poisson(1.0, size=B).astype(float)   # online bagging
+            w = base * poisson
+            losses.append(m.update(embeddings, successes, counts, sample_weight=w,
+                                   etg_target=etg_target, steps=steps))
+        return float(np.mean(losses))
 
 
 class EMAPredictor:

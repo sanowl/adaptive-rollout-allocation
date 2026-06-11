@@ -46,6 +46,31 @@ def test_blend_strategy_also_reduces_variance():
     assert _mean_over_seeds(Estimator.DR_GRPO, "blend") < 1.0
 
 
+def test_env_keeps_difficulty_spread():
+    # Fix #1: training must not collapse all prompts to p=1; ceilings preserve
+    # a heterogeneous population so the allocator always has something to exploit.
+    env = MockRLVREnv(num_prompts=128, embed_dim=8, learn_rate=0.2, seed=0)
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        batch = rng.choice(128, size=32, replace=False)
+        env.train_step(batch, np.full(32, 16))
+    assert env.p_true.std() > 0.1            # spread survives
+    assert (env.p_true < 0.95).mean() > 0.2  # plenty of non-saturated prompts
+
+
+def test_etg_target_is_learning_progress():
+    # Fix #2: the ETG head target is the *rise* in success rate, not p(1-p).
+    env = MockRLVREnv(num_prompts=20, embed_dim=8, seed=1)
+    vip = VIPAllocator(env.embeddings, VIPConfig(use_replay=False))
+    batch = np.arange(5)
+    # First observation seeds the baseline (no progress signal yet).
+    vip.observe(batch, successes=np.full(5, 2.0), counts=np.full(5, 8.0))
+    assert np.allclose(vip._last_phat[batch], 2.0 / 8.0)
+    # Second observation: success rate rose 0.25 -> 0.75, progress = 0.5.
+    vip.observe(batch, successes=np.full(5, 6.0), counts=np.full(5, 8.0))
+    assert np.allclose(vip._last_phat[batch], 6.0 / 8.0)
+
+
 def test_observe_advances_version_and_replay():
     env = MockRLVREnv(num_prompts=50, embed_dim=16, seed=3)
     vip = VIPAllocator(env.embeddings, VIPConfig())

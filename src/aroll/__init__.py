@@ -12,8 +12,12 @@ Verifiable Rewards" (VIP, ICLR 2026), plus five recommended extensions:
 
 from .allocation import AllocationResult, allocate, uniform_allocation
 from .buckets import BucketConfig, assign_buckets, select_balanced_batch
+from .calibration import (
+    brier_score, expected_calibration_error, outcomes_from_counts,
+    predictor_mae, reliability_curve, uncertainty_error_correlation,
+)
 from .env import MockRLVREnv
-from .predictor import EMAPredictor, Prediction, RolloutPredictor
+from .predictor import EMAPredictor, EnsemblePredictor, Prediction, RolloutPredictor
 from .prefix import Prefix, allocate_prefixes, expand_tree_budget
 from .pruning import PruneDecision, prune_rollouts
 from .replay import ReplayBuffer, blend_with_replay
@@ -24,8 +28,10 @@ from .vip import VIPAllocator, VIPConfig
 __all__ = [
     "allocate", "uniform_allocation", "AllocationResult",
     "Estimator", "per_prompt_variance", "variance_coeff",
-    "RolloutPredictor", "EMAPredictor", "Prediction",
+    "RolloutPredictor", "EnsemblePredictor", "EMAPredictor", "Prediction",
     "coefficients", "boundary_score",
+    "predictor_mae", "brier_score", "expected_calibration_error",
+    "reliability_curve", "outcomes_from_counts", "uncertainty_error_correlation",
     "BucketConfig", "assign_buckets", "select_balanced_batch",
     "ReplayBuffer", "blend_with_replay",
     "prune_rollouts", "PruneDecision",

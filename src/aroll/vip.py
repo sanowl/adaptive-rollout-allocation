@@ -24,7 +24,7 @@ import numpy as np
 
 from .allocation import AllocationResult, allocate
 from .buckets import BucketConfig, select_balanced_batch
-from .predictor import Prediction, RolloutPredictor
+from .predictor import EnsemblePredictor, Prediction, RolloutPredictor
 from .replay import ReplayBuffer, blend_with_replay
 from .scoring import boundary_score, coefficients
 from .variance import Estimator
@@ -43,6 +43,8 @@ class VIPConfig:
     bucket_cfg: BucketConfig = field(default_factory=BucketConfig)
     use_replay: bool = True
     replay_weight: float = 1.0
+    predictor_kind: str = "mlp"        # "mlp" (MC-dropout) or "ensemble" (calibrated)
+    ensemble_members: int = 5
 
 
 class VIPAllocator:
@@ -53,7 +55,12 @@ class VIPAllocator:
         self.embeddings = np.asarray(embeddings, dtype=float)
         self.num_prompts, self.embed_dim = self.embeddings.shape
         self.cfg = config or VIPConfig()
-        self.predictor = predictor or RolloutPredictor(self.embed_dim)
+        if predictor is not None:
+            self.predictor = predictor
+        elif self.cfg.predictor_kind == "ensemble":
+            self.predictor = EnsemblePredictor(self.embed_dim, n_members=self.cfg.ensemble_members)
+        else:
+            self.predictor = RolloutPredictor(self.embed_dim)
         self.replay = ReplayBuffer() if self.cfg.use_replay else None
         self.version = 0               # policy version (increments per update)
         # Last observed success rate per prompt, used to derive a *real* target

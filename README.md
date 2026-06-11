@@ -18,7 +18,7 @@ paper's objective — each is a toggle so you can A/B them.
 
 | # | Idea | Module | Notes |
 |---|------|--------|-------|
-| 1 | Learned predictor replaces the GP (`p_success`, `uncertainty`, `expected_training_gain`); score `p(1−p)·uncertainty` | `predictor.py`, `scoring.py` | `score` optimises the *learning boundary*, not gradient variance — exploration objective, on by default |
+| 1 | Learned predictor replaces the GP (`p_success`, `uncertainty`, `expected_training_gain`); score `p(1−p)·uncertainty` | `predictor.py`, `scoring.py` | MC-dropout MLP **or** calibrated deep ensemble (`predictor_kind="ensemble"`). `score` optimises the *learning boundary*, not gradient variance — exploration objective, on by default |
 | 2 | Difficulty buckets (easy/medium/hard quotas) | `buckets.py` | batch-selection guardrail against curriculum collapse |
 | 3 | Replay buffer, staleness-downweighted | `replay.py` | used for *predictor estimation only*, never the on-policy gradient |
 | 4 | Online rollout pruning during generation | `pruning.py` | arrol-style; prunes certain+consensual rollouts, keeps ≥ `keep_min` |
@@ -30,10 +30,17 @@ paper's objective — each is a toggle so you can A/B them.
 ## Quick start
 
 ```bash
-pip install -e .            # numpy + torch
-python examples/demo.py     # VIP vs uniform on the mock env
-pytest                      # 28 tests
+pip install -e .                       # numpy + torch
+python examples/demo.py                # VIP vs uniform on the mock env
+python examples/compare_predictors.py  # MC-dropout MLP vs deep ensemble (calibration)
+pytest                                 # 38 tests
 ```
+
+Calibration tools (`calibration.py`): `predictor_mae`, `brier_score`,
+`expected_calibration_error`, `reliability_curve`, `uncertainty_error_correlation`
+— for judging whether a predictor's uncertainty is trustworthy, not just its
+point accuracy. The deep ensemble gives better-calibrated uncertainty than
+MC-dropout, which matters because the `score` strategy multiplies by it.
 
 ```python
 import numpy as np
