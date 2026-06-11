@@ -65,10 +65,12 @@ def test_etg_target_is_learning_progress():
     batch = np.arange(5)
     # First observation seeds the baseline (no progress signal yet).
     vip.observe(batch, successes=np.full(5, 2.0), counts=np.full(5, 8.0))
-    assert np.allclose(vip._last_phat[batch], 2.0 / 8.0)
-    # Second observation: success rate rose 0.25 -> 0.75, progress = 0.5.
+    assert np.allclose(vip.history.last_phat[batch], 2.0 / 8.0)
+    # Second observation: success rate rose 0.25 -> 0.75; progress target = 0.5.
+    progress = vip.history.learning_progress(batch, np.full(5, 6.0 / 8.0))
+    assert np.allclose(progress, 0.5)
     vip.observe(batch, successes=np.full(5, 6.0), counts=np.full(5, 8.0))
-    assert np.allclose(vip._last_phat[batch], 6.0 / 8.0)
+    assert np.allclose(vip.history.last_phat[batch], 6.0 / 8.0)
 
 
 def test_observe_advances_version_and_replay():

@@ -24,7 +24,8 @@ import numpy as np
 
 from .allocation import AllocationResult, allocate
 from .buckets import BucketConfig, select_balanced_batch
-from .predictor import EnsemblePredictor, Prediction, RolloutPredictor
+from .history import PromptHistory
+from .predictor import EnsemblePredictor, Prediction, Predictor, RolloutPredictor
 from .replay import ReplayBuffer, blend_with_replay
 from .scoring import boundary_score, coefficients
 from .variance import Estimator
@@ -45,32 +46,55 @@ class VIPConfig:
     replay_weight: float = 1.0
     predictor_kind: str = "mlp"        # "mlp" (MC-dropout) or "ensemble" (calibrated)
     ensemble_members: int = 5
+    use_history: bool = True           # concat per-prompt recency features (Change #1)
 
 
 class VIPAllocator:
     """Stateful VIP controller over a fixed set of training prompts."""
 
     def __init__(self, embeddings: np.ndarray, config: VIPConfig | None = None,
-                 predictor: RolloutPredictor | None = None):
-        self.embeddings = np.asarray(embeddings, dtype=float)
-        self.num_prompts, self.embed_dim = self.embeddings.shape
+                 predictor: Predictor | None = None):
+        self.base_embeddings = np.asarray(embeddings, dtype=float)
+        self.num_prompts, self.base_dim = self.base_embeddings.shape
         self.cfg = config or VIPConfig()
+        # Per-prompt history state (tracks non-stationary success probability).
+        # Always maintained: it supplies the ETG target even when history
+        # features are disabled.
+        self.history = PromptHistory(self.num_prompts)
+
+        expected_dim = self.base_dim + PromptHistory.N_FEATURES
         if predictor is not None:
             self.predictor = predictor
-        elif self.cfg.predictor_kind == "ensemble":
-            self.predictor = EnsemblePredictor(self.embed_dim, n_members=self.cfg.ensemble_members)
+            # Append history features only if the supplied predictor was sized for them.
+            self.use_history = (getattr(predictor, "embed_dim", self.base_dim) == expected_dim)
         else:
-            self.predictor = RolloutPredictor(self.embed_dim)
+            self.use_history = self.cfg.use_history
+            dim = expected_dim if self.use_history else self.base_dim
+            if self.cfg.predictor_kind == "ensemble":
+                self.predictor = EnsemblePredictor(dim, n_members=self.cfg.ensemble_members)
+            else:
+                self.predictor = RolloutPredictor(dim)
+        self.embed_dim = self.predictor.embed_dim
+
         self.replay = ReplayBuffer() if self.cfg.use_replay else None
         self.version = 0               # policy version (increments per update)
-        # Last observed success rate per prompt, used to derive a *real* target
-        # for the expected-training-gain head: learning progress = Δ success rate.
-        # NaN marks prompts never observed yet.
-        self._last_phat = np.full(self.num_prompts, np.nan, dtype=float)
 
-    # -- prediction ----------------------------------------------------------
+    # -- inputs / prediction -------------------------------------------------
+    def _inputs(self, prompt_ids: np.ndarray) -> np.ndarray:
+        """Predictor inputs: static embedding, optionally + recency features.
+
+        Reflects pre-update history state, so the features used to *predict* in
+        ``allocate`` match the features used to *train* in ``observe`` for the
+        same iteration.
+        """
+        base = self.base_embeddings[prompt_ids]
+        if not self.use_history:
+            return base
+        feats = self.history.features(prompt_ids, self.version)
+        return np.concatenate([base, feats], axis=1)
+
     def predict(self, prompt_ids: np.ndarray) -> Prediction:
-        return self.predictor.predict(self.embeddings[prompt_ids], mc_samples=self.cfg.mc_samples)
+        return self.predictor.predict(self._inputs(prompt_ids), mc_samples=self.cfg.mc_samples)
 
     # -- batch selection (Rec. 2) -------------------------------------------
     def select_batch(self, candidate_ids: np.ndarray, batch_size: int,
@@ -99,27 +123,29 @@ class VIPAllocator:
         prompt_ids = np.asarray(prompt_ids)
         successes = np.asarray(successes, dtype=float)
         counts = np.asarray(counts, dtype=float)
-        embs = self.embeddings[prompt_ids]
+        # Replay stores the *static* embedding (prompt-keyed, reused across
+        # versions); history features are time-varying and computed on the fly.
+        base_embs = self.base_embeddings[prompt_ids]
 
         if self.replay is not None:
-            self.replay.add_batch(prompt_ids, embs, successes.astype(int),
+            self.replay.add_batch(prompt_ids, base_embs, successes.astype(int),
                                   counts.astype(int), self.version)
             succ, cnt, w = blend_with_replay(prompt_ids, successes, counts, self.replay,
                                              self.version, self.cfg.replay_weight)
         else:
             succ, cnt, w = successes, counts, None
 
-        # Real expected-training-gain target: how much this prompt's success rate
-        # rose since we last saw it (learning progress). First observation has no
-        # baseline, so we fall back to the boundary proxy p_hat(1-p_hat) for it.
+        # Real expected-training-gain target: learning progress since last seen
+        # (computed from pre-update history state).
         p_hat = np.clip(successes / np.maximum(counts, 1.0), 0.0, 1.0)
-        prev = self._last_phat[prompt_ids]
-        etg_target = np.where(np.isnan(prev), p_hat * (1.0 - p_hat),
-                              np.clip(p_hat - prev, 0.0, 1.0))
-        self._last_phat[prompt_ids] = p_hat
+        etg_target = self.history.learning_progress(prompt_ids, p_hat)
 
-        loss = self.predictor.update(embs, succ, cnt, sample_weight=w,
+        # Train on the same inputs the predictor predicted from this step.
+        inputs = self._inputs(prompt_ids)
+        loss = self.predictor.update(inputs, succ, cnt, sample_weight=w,
                                      etg_target=etg_target, steps=self.cfg.predictor_steps)
+
+        self.history.update(prompt_ids, p_hat, self.version)
         self.version += 1
         if self.replay is not None:
             self.replay.prune(self.version)

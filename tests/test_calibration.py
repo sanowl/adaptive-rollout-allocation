@@ -85,6 +85,21 @@ def test_ensemble_uncertainty_tracks_error():
     assert corr > 0.0                                   # higher uncertainty -> higher error
 
 
+def test_both_predictors_satisfy_protocol():
+    from aroll.predictor import Predictor, RolloutPredictor
+    assert isinstance(RolloutPredictor(8), Predictor)
+    assert isinstance(EnsemblePredictor(8, n_members=2), Predictor)
+
+
+def test_mc_dropout_uncertainty_nonneg_and_shaped():
+    from aroll.predictor import RolloutPredictor
+    p = RolloutPredictor(8, dropout=0.2)
+    out = p.predict(np.random.randn(5, 8), mc_samples=16)
+    assert out.p_success.shape == (5,)
+    assert out.uncertainty.shape == (5,)
+    assert np.all(out.uncertainty >= 0)
+
+
 def test_ensemble_is_drop_in_for_vip():
     env = MockRLVREnv(num_prompts=40, embed_dim=16, seed=3)
     vip = VIPAllocator(env.embeddings, VIPConfig(predictor_kind="ensemble", ensemble_members=3))

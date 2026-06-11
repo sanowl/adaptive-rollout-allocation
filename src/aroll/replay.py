@@ -26,10 +26,10 @@ import numpy as np
 @dataclass
 class RolloutRecord:
     prompt_id: int
-    embedding: np.ndarray
     successes: int
     count: int
-    version: int            # policy version when generated
+    version: int                       # policy version when generated
+    embedding: np.ndarray | None = None  # only stored when store_embeddings=True
 
 
 class ReplayBuffer:
@@ -39,21 +39,29 @@ class ReplayBuffer:
         capacity: max records (oldest evicted first).
         decay: per-version staleness multiplier in (0, 1].
         max_age: records older than this many versions are ignored (and pruned).
+        store_embeddings: keep per-record embeddings. Off by default — the buffer
+            blends success/count statistics by prompt id and does not need them,
+            so storing d-dim vectors for thousands of records is wasted memory.
+            Enable only if you plan to refit a predictor from replayed examples.
     """
 
-    def __init__(self, capacity: int = 4096, decay: float = 0.8, max_age: int = 8):
+    def __init__(self, capacity: int = 4096, decay: float = 0.8, max_age: int = 8,
+                 store_embeddings: bool = False):
         self.capacity = capacity
         self.decay = decay
         self.max_age = max_age
+        self.store_embeddings = store_embeddings
         self._buf: deque[RolloutRecord] = deque(maxlen=capacity)
 
     def __len__(self) -> int:
         return len(self._buf)
 
-    def add(self, prompt_id: int, embedding: np.ndarray, successes: int,
+    def add(self, prompt_id: int, embedding: np.ndarray | None, successes: int,
             count: int, version: int) -> None:
-        self._buf.append(RolloutRecord(int(prompt_id), np.asarray(embedding, dtype=float),
-                                       int(successes), int(count), int(version)))
+        emb = (np.asarray(embedding, dtype=float)
+               if self.store_embeddings and embedding is not None else None)
+        self._buf.append(RolloutRecord(int(prompt_id), int(successes), int(count),
+                                       int(version), emb))
 
     def add_batch(self, prompt_ids, embeddings, successes, counts, version: int) -> None:
         for pid, emb, s, c in zip(prompt_ids, embeddings, successes, counts):

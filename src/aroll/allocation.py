@@ -169,10 +169,18 @@ def allocate(
         :class:`AllocationResult` with integer ``n`` summing to ``budget``.
     """
     a = np.asarray(a, dtype=float)
+    if a.ndim != 1 or a.size == 0:
+        raise ValueError(f"coefficients `a` must be a non-empty 1-D array, got shape {a.shape}")
+    if not np.all(np.isfinite(a)):
+        raise ValueError("coefficients `a` contain NaN/inf")
+    if np.any(a < 0):
+        raise ValueError("coefficients `a` must be non-negative (a_q = 4 sigma^2 p(1-p) >= 0)")
     B = a.shape[0]
     L, U, C = int(n_min), int(n_max), int(budget)
     if L < 3:
         raise ValueError("paper requires per-prompt lower bound L >= 3")
+    if U < L:
+        raise ValueError(f"n_max ({U}) must be >= n_min ({L})")
     feasible = B * L <= C <= B * U
     if not feasible:
         # Clamp the budget into the feasible band and proceed best-effort.

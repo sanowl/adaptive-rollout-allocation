@@ -21,10 +21,14 @@ paper's objective — each is a toggle so you can A/B them.
 | 1 | Learned predictor replaces the GP (`p_success`, `uncertainty`, `expected_training_gain`); score `p(1−p)·uncertainty` | `predictor.py`, `scoring.py` | MC-dropout MLP **or** calibrated deep ensemble (`predictor_kind="ensemble"`). `score` optimises the *learning boundary*, not gradient variance — exploration objective, on by default |
 | 2 | Difficulty buckets (easy/medium/hard quotas) | `buckets.py` | batch-selection guardrail against curriculum collapse |
 | 3 | Replay buffer, staleness-downweighted | `replay.py` | used for *predictor estimation only*, never the on-policy gradient |
-| 4 | Online rollout pruning during generation | `pruning.py` | arrol-style; prunes certain+consensual rollouts, keeps ≥ `keep_min` |
+| 4 | Online rollout pruning during generation | `pruning.py` | arrol-style; prunes certain+consensual rollouts, keeps ≥ `keep_min`. Returns an unbiased `frozen_baseline` (use `corrected_advantages`) so pruning doesn't skew the group baseline |
 | 5 | Prefix-level allocation for agents | `prefix.py` | TRACE-style; reuses the allocator at prefix granularity |
 
-`vip.py` (`VIPAllocator`) wires predictor + buckets + replay + allocation together.
+The predictor also receives **per-prompt history features** (`history.py`) — recent
+success-rate level, trend, and recency — concatenated onto the static embedding,
+so it can track the *non-stationary* success probability instead of chasing it
+(toggle with `use_history`). `vip.py` (`VIPAllocator`) wires predictor + history +
+buckets + replay + allocation together.
 `env.py` is a mock RLVR environment so the whole pipeline runs without an LLM.
 
 ## Quick start

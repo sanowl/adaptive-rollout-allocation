@@ -23,6 +23,7 @@ non-stationary success probabilities as the policy improves.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 import torch
@@ -37,6 +38,22 @@ class Prediction:
     p_success: np.ndarray
     uncertainty: np.ndarray
     expected_training_gain: np.ndarray
+
+
+@runtime_checkable
+class Predictor(Protocol):
+    """Interface every predictor satisfies (MLP, ensemble, or a custom one).
+
+    ``embed_dim`` lets :class:`~aroll.vip.VIPAllocator` decide whether the
+    predictor was sized to receive history features.
+    """
+
+    embed_dim: int
+
+    def predict(self, embeddings: np.ndarray, mc_samples: int = ...) -> Prediction: ...
+
+    def update(self, embeddings: np.ndarray, successes: np.ndarray, counts: np.ndarray,
+               sample_weight=..., etg_target=..., steps: int = ...) -> float: ...
 
 
 class RolloutPredictor(nn.Module):
@@ -83,15 +100,15 @@ class RolloutPredictor(nn.Module):
         x = torch.as_tensor(np.asarray(embeddings), dtype=torch.float32, device=self.device)
         if mc_samples > 1:
             self.train()  # enable dropout
-            ps, etgs = [], []
-            for _ in range(mc_samples):
-                logit, etg = self._forward_logits(x)
-                ps.append(torch.sigmoid(logit))
-                etgs.append(etg)
-            P = torch.stack(ps, 0)            # (S, B)
+            # Vectorised MC-dropout: tile the batch so all samples run in one
+            # forward pass (independent dropout masks per row) instead of a loop.
+            B = x.shape[0]
+            xt = x.repeat(mc_samples, 1)                  # (S*B, d)
+            logit, etg_all = self._forward_logits(xt)
+            P = torch.sigmoid(logit).view(mc_samples, B)  # (S, B)
             p_mean = P.mean(0)
             uncertainty = P.std(0, unbiased=False)
-            etg = torch.stack(etgs, 0).mean(0)
+            etg = etg_all.view(mc_samples, B).mean(0)
         else:
             self.eval()
             logit, etg = self._forward_logits(x)

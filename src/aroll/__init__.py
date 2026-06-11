@@ -19,7 +19,7 @@ from .calibration import (
 from .env import MockRLVREnv
 from .predictor import EMAPredictor, EnsemblePredictor, Prediction, RolloutPredictor
 from .prefix import Prefix, allocate_prefixes, expand_tree_budget
-from .pruning import PruneDecision, prune_rollouts
+from .pruning import PruneDecision, corrected_advantages, prune_rollouts
 from .replay import ReplayBuffer, blend_with_replay
 from .scoring import boundary_score, coefficients
 from .variance import Estimator, per_prompt_variance, variance_coeff
@@ -34,7 +34,7 @@ __all__ = [
     "reliability_curve", "outcomes_from_counts", "uncertainty_error_correlation",
     "BucketConfig", "assign_buckets", "select_balanced_batch",
     "ReplayBuffer", "blend_with_replay",
-    "prune_rollouts", "PruneDecision",
+    "prune_rollouts", "PruneDecision", "corrected_advantages",
     "Prefix", "allocate_prefixes", "expand_tree_budget",
     "MockRLVREnv",
     "VIPAllocator", "VIPConfig",

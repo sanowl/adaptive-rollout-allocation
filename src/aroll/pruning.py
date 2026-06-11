@@ -29,6 +29,7 @@ class PruneDecision:
     keep: np.ndarray          # bool mask over in-flight rollouts
     pruned_count: int
     est_compute_saved: float  # fraction of remaining work skipped (0..1)
+    frozen_baseline: float    # unbiased group baseline (reward scale), see below
 
 
 def _entropy(p: np.ndarray) -> np.ndarray:
@@ -57,11 +58,22 @@ def prune_rollouts(
     it by how far its predicted outcome is from the group mean, weighted by its
     outcome uncertainty (entropy): a rollout that is *certain and consensual*
     carries the least new gradient signal.
+
+    Baseline-bias correction (Change #2): pruning preferentially removes
+    *consensus* rollouts, so the mean of the *surviving* rollouts is a biased
+    estimate of the group baseline that the advantage estimator subtracts. We
+    therefore freeze an unbiased baseline computed from *all* started rollouts
+    before pruning (mapping ``p_correct`` to the reward scale, ``E[R]=2p-1`` for
+    rewards in {-1,+1}). The trainer should center advantages with
+    :func:`corrected_advantages` against ``decision.frozen_baseline`` rather than
+    re-deriving the mean from the survivors.
     """
     p = np.asarray(p_correct, dtype=float)
     m = p.shape[0]
+    # Unbiased baseline from the full started group, before any pruning.
+    frozen_baseline = float(np.mean(2.0 * p - 1.0)) if m else 0.0
     if m <= keep_min:
-        return PruneDecision(np.ones(m, dtype=bool), 0, 0.0)
+        return PruneDecision(np.ones(m, dtype=bool), 0, 0.0, frozen_baseline)
 
     consensus = float(p.mean())
     disagreement = np.abs(p - consensus)        # high => informative
@@ -87,4 +99,20 @@ def prune_rollouts(
     # Compute saved ~ pruned rollouts * their remaining fraction.
     remaining_frac = 1.0 - prog
     saved = float((remaining_frac[~keep]).sum() / max(m, 1)) if pruned else 0.0
-    return PruneDecision(keep=keep, pruned_count=pruned, est_compute_saved=saved)
+    return PruneDecision(keep=keep, pruned_count=pruned, est_compute_saved=saved,
+                         frozen_baseline=frozen_baseline)
+
+
+def corrected_advantages(rewards: np.ndarray, decision: PruneDecision) -> np.ndarray:
+    """Center surviving rollouts' rewards against the unbiased frozen baseline.
+
+    Use this instead of ``rewards - rewards.mean()`` after pruning: the survivor
+    mean is biased upward/downward because pruning removed consensus rollouts,
+    whereas ``decision.frozen_baseline`` reflects the full started group.
+
+    Args:
+        rewards: final rewards of the *kept* rollouts (length == decision.keep.sum()).
+        decision: the :class:`PruneDecision` from :func:`prune_rollouts`.
+    """
+    rewards = np.asarray(rewards, dtype=float)
+    return rewards - decision.frozen_baseline

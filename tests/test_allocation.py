@@ -44,6 +44,18 @@ def test_zero_coeff_gets_minimum():
     assert res.total == 30
 
 
+def test_allocate_rejects_bad_coefficients():
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        allocate(np.array([0.1, np.nan, 0.2]), budget=30)
+    with _pytest.raises(ValueError):
+        allocate(np.array([0.1, -0.5]), budget=20)
+    with _pytest.raises(ValueError):
+        allocate(np.array([]), budget=10)
+    with _pytest.raises(ValueError):
+        allocate(np.array([0.1, 0.2]), budget=10, n_min=5, n_max=4)
+
+
 def test_infeasible_budget_clamped():
     a = np.ones(5)
     # C below B*L: clamped to feasible band, still returns valid integers.

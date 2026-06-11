@@ -4,7 +4,7 @@ import numpy as np
 from aroll.buckets import BucketConfig, assign_buckets, select_balanced_batch
 from aroll.predictor import RolloutPredictor
 from aroll.prefix import Prefix, allocate_prefixes
-from aroll.pruning import prune_rollouts
+from aroll.pruning import corrected_advantages, prune_rollouts
 from aroll.replay import ReplayBuffer, blend_with_replay
 from aroll.scoring import boundary_score, coefficients
 from aroll.variance import Estimator
@@ -100,6 +100,29 @@ def test_pruning_spares_uncertain_and_unstarted():
     dec = prune_rollouts(p, progress=prog, keep_min=2, value_quantile=0.5)
     assert dec.keep[0] and dec.keep[1]        # uncertain rollouts kept
     assert dec.keep[4]                        # barely-started rollout kept
+
+
+def test_frozen_baseline_unbiased_after_pruning():
+    # Group of 10: 7 near-certain successes (consensus) + 3 genuine failures.
+    # Pruning removes consensus successes, biasing the survivor mean downward;
+    # the frozen baseline reflects the full started group instead.
+    p = np.array([0.97] * 7 + [0.05, 0.05, 0.05])
+    full_mean = np.mean(2 * p - 1)            # true group baseline (reward scale)
+    dec = prune_rollouts(p, progress=np.ones(10), keep_min=3, value_quantile=0.5)
+    assert dec.pruned_count > 0
+    # Frozen baseline equals the full-group mean, regardless of who was pruned.
+    assert np.isclose(dec.frozen_baseline, full_mean)
+    # Survivor mean is biased away from it (consensus successes were dropped).
+    survivor_mean = np.mean((2 * p - 1)[dec.keep])
+    assert abs(survivor_mean - full_mean) > abs(dec.frozen_baseline - full_mean)
+
+
+def test_corrected_advantages_use_frozen_baseline():
+    p = np.array([0.9] * 6 + [0.1] * 2)
+    dec = prune_rollouts(p, progress=np.ones(8), keep_min=3, value_quantile=0.4)
+    kept_rewards = np.where(p[dec.keep] > 0.5, 1.0, -1.0)
+    adv = corrected_advantages(kept_rewards, dec)
+    assert np.allclose(adv, kept_rewards - dec.frozen_baseline)
 
 
 # --- Rec. 5: prefix-level allocation ------------------------------------------
